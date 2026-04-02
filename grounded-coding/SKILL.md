@@ -2,7 +2,7 @@
 name: grounded-coding
 description: |
   程序化扎根理论编码（Grounded Theory Coding）工具。对访谈记录或其他质性资料进行系统化的
-  开放编码、类属归并、属性与维度分析，最终生成完整的编码表并保存为Excel文件。
+  开放编码、类属归并、属性与维度分析，每份访谈完成后自动保存为 Markdown 文件，所有访谈完成后按需生成汇总 Excel。
   当用户提到需要进行扎根编码/扎根理论编码/开放编码/质性编码/grounded coding/open coding/
   qualitative coding，或者提到需要对访谈资料/质性资料进行编码分析，或者上传/提供了访谈
   记录的本地文件路径时触发此skill。即使用户只是笼统地说"帮我对这份访谈进行编码"、
@@ -11,7 +11,7 @@ description: |
 
 # 程序化扎根理论编码
 
-对访谈记录或其他质性资料进行系统化的扎根理论编码分析，按六个阶段自动连续执行，最终生成完整编码表并保存为Excel文件。
+对访谈记录或其他质性资料进行系统化的扎根理论编码分析，按六个阶段自动连续执行，每份访谈完成后自动保存 Markdown 文件，所有访谈完成后按需生成汇总 Excel。
 
 ## 启动：获取基本信息
 
@@ -202,18 +202,57 @@ S4      | 原文...  | 编码D    | 类属X→类属X' | 修订（类属X因本�
 
 > **备忘录提示（可选）：** 类属演化摘要中如果出现了让你意外的变化——某个既有类属被迫修订、某个新类属突然出现——这种"意外"正是备忘录最需要捕捉的时刻。直接说出来，`memo-coach` 可以帮你把它推演成理论命题。
 
-### 第六阶段：生成完整编码表（Excel输出）
+### 第六阶段：保存编码结果到 Markdown 文件（强制执行，不可跳过）
 
-将全部编码结果整合为一份完整的Excel文件，保存到质性资料所在的文件夹中。
+第五阶段完成后，**必须立即调用 Write 工具**将本份访谈的完整编码结果写入 Markdown 文件。不得仅在对话中输出而不写文件。
 
-使用 [scripts/export_coding.py](scripts/export_coding.py) 脚本生成Excel。先将编码数据构造为JSON，写入临时文件，再调用脚本。
+文件命名规则：`coding_GT_[被访者编号或简称].md`
+（如 `coding_GT_A.md`、`coding_GT_P1.md`）
 
-Excel文件结构（4个工作表）：
+保存路径：当前工作目录（即项目目录根目录）
 
-**Sheet 1：完整编码表**
+文件内容格式：
+```
+# 扎根编码：【被访者编号/简称】
+编码日期：[日期]
+研究主题：[研究主题]
+
+## 一、整体主题概览
+[第一阶段输出]
+
+## 二、开放编码表
 | 句群序号 | 原文内容 | 开放编码 | 类属 |
 |---------|---------|---------|------|
 | S1 | ... | ... | ... |
+
+## 三、属性与维度分析
+[每个类属的属性、维度、四象限]
+
+## 四、编码统计摘要
+[第五阶段统计输出]
+
+## 五、类属演化摘要（如适用）
+[第五阶段演化摘要输出]
+```
+
+Write 工具调用完成后，告知研究者：
+> "本份编码已通过 Write 工具保存至 `coding_GT_[被访者编号].md`。如需继续下一份访谈，请提供文本；如所有访谈已完成，输入"生成Excel"可生成完整编码表。"
+
+---
+
+## 最终输出：生成完整 Excel（按需，所有访谈完成后）
+
+当研究者说"生成Excel""所有访谈完成"或主动请求时，才执行此步骤。
+
+将当前项目目录中所有 `coding_GT_*.md` 文件的数据整合，生成一份汇总所有访谈的 Excel 文件。
+
+使用 `scripts/export_coding.py` 脚本生成。先将编码数据构造为 JSON，写入临时文件，再调用脚本。
+
+Excel文件结构（4个工作表）：
+
+**Sheet 1：完整编码表**（所有访谈合并）
+| 访谈编号 | 句群序号 | 原文内容 | 开放编码 | 类属 |
+|---------|---------|---------|---------|------|
 
 **Sheet 2：编码-类属汇总**
 | 类属 | 包含的开放编码 | 编码数量 |
@@ -224,69 +263,11 @@ Excel文件结构（4个工作表）：
 |------|-------|----------|-------|----------|-----------|
 
 **Sheet 4：编码统计**
-包含第五阶段的统计数据
+包含跨访谈的汇总统计数据
 
 生成命令：
 ```bash
-python3 <skill_path>/scripts/export_coding.py --output "<资料所在文件夹>/扎根编码_<被访者简称>.xlsx" --json-file /tmp/_grounded_coding_data.json
-```
-
-JSON数据结构：
-```json
-{
-  "metadata": {
-    "research_field": "研究领域",
-    "research_topic": "研究主题",
-    "interviewee": "被访者信息",
-    "source_file": "原始资料文件名",
-    "coding_date": "编码日期"
-  },
-  "themes": [
-    {"name": "主题名", "description": "说明"}
-  ],
-  "coding_table": [
-    {
-      "id": "S1",
-      "original_text": "原文内容",
-      "open_code": "开放编码",
-      "category": "类属"
-    }
-  ],
-  "categories": [
-    {
-      "name": "类属名",
-      "codes": ["编码1", "编码2"],
-      "code_count": 5,
-      "property1": {
-        "name": "属性1名称",
-        "dimension_a": "维度极端A",
-        "dimension_b": "维度极端B"
-      },
-      "property2": {
-        "name": "属性2名称",
-        "dimension_a": "维度极端C",
-        "dimension_b": "维度极端D"
-      },
-      "quadrants": {
-        "type_I": {"name": "类型I名称", "description": "属性1-极端A + 属性2-极端C"},
-        "type_II": {"name": "类型II名称", "description": "属性1-极端A + 属性2-极端D"},
-        "type_III": {"name": "类型III名称", "description": "属性1-极端B + 属性2-极端C"},
-        "type_IV": {"name": "类型IV名称", "description": "属性1-极端B + 属性2-极端D"}
-      }
-    }
-  ],
-  "statistics": {
-    "total_segments": 50,
-    "unique_codes": 30,
-    "total_categories": 6,
-    "category_distribution": [
-      {"category": "类属名", "code_count": 5, "percentage": "16.7%"}
-    ],
-    "top_codes": [
-      {"code": "编码名", "frequency": 5}
-    ]
-  }
-}
+python3 <skill_path>/scripts/export_coding.py --output "<项目目录>/扎根编码_汇总.xlsx" --json-file /tmp/_grounded_coding_data.json
 ```
 
 ## 过程中的对话输出
