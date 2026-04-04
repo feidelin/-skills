@@ -359,6 +359,7 @@ python3 ~/.claude/skills/ta-research-AFP-auto/scripts/ta_agent.py --project-dir 
 📄 discussion.md                 讨论与结论
 📄 title_abstract_keywords.md    标题/摘要/关键词
 📄 引用核查报告_final.md         全文引用核查报告
+📝 [研究主题]_初稿.docx          完整论文初稿（Word，各章节按顺序合并）
 
 ━━ 自动决策日志 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🤖 CP2 理论定位：[A/B/C] — [判断依据]
