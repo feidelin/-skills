@@ -95,7 +95,7 @@ description: |
 ✦ 检查点 9   讨论与结论写作
 ✦ 检查点 10  标题 / 摘要 / 关键词  ⚠️ 三步多方案
 ✦ 检查点 11  全文引用核查
-✦ 检查点 12  完稿汇总（协调器直接执行，无需外部skill）
+✦ 检查点 12  完稿汇总 + Word 初稿合成（协调器直接执行，无需外部skill）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 已标记跳过：[列出用户声明已完成的检查点，如无则为"无"]
 从检查点 [N] 开始。
@@ -533,7 +533,9 @@ description: |
 
 ---
 
-## 检查点 12：完稿汇总（协调器直接执行，无需外部skill）
+## 检查点 12：完稿汇总 + Word 初稿合成（协调器直接执行，无需外部skill）
+
+**第一步：输出完稿清单**
 
 汇总所有已生成文件，输出完稿清单与装配指引：
 
@@ -563,6 +565,129 @@ description: |
 五、研究发现 → findings.md
 六、讨论与结论 → discussion.md
 论文信息 → title_abstract_keywords.md
+```
+
+**第二步：合成 Word 初稿（自动执行 Bash）**
+
+完稿清单输出后，立即执行以下 Bash 命令，将各章节合并为完整 Word 初稿，保存到项目目录：
+
+```bash
+python3 - << 'PYEOF'
+import os, re, sys
+from pathlib import Path
+
+project_dir = Path(os.getcwd())
+
+# 章节顺序
+chapters = [
+    "title_abstract_keywords.md",
+    "introduction.md",
+    "literature_review.md",
+    "framework_section.md",
+    "methods.md",
+    "findings.md",
+    "discussion.md",
+]
+# framework_section 可能带后缀 A/B/C
+if not (project_dir / "framework_section.md").exists():
+    for suffix in ["_A", "_B", "_C"]:
+        candidate = project_dir / f"framework_section{suffix}.md"
+        if candidate.exists():
+            chapters[3] = f"framework_section{suffix}.md"
+            break
+
+available = [project_dir / f for f in chapters if (project_dir / f).exists()]
+if not available:
+    print("⚠️  未找到任何章节文件，跳过 Word 生成")
+    sys.exit(0)
+
+# 从 CLAUDE.md 提取研究主题作为文件名
+topic = "论文初稿"
+claude_md = project_dir / "CLAUDE.md"
+if claude_md.exists():
+    for line in claude_md.read_text(encoding="utf-8").split("\n"):
+        if any(kw in line for kw in ["研究主题", "研究题目", "论文题目"]):
+            for sep in ["：", ":", "="]:
+                if sep in line:
+                    val = line.split(sep, 1)[1].strip().strip("*").strip()
+                    if val and len(val) > 1:
+                        topic = val[:40]
+                        break
+            break
+safe_topic = re.sub(r'[/\\:*?"<>|]', "_", topic)
+
+# 方案1：pypandoc
+try:
+    import pypandoc
+    combined = project_dir / "_draft_combined.md"
+    with open(combined, "w", encoding="utf-8") as out:
+        for p in available:
+            out.write(p.read_text(encoding="utf-8"))
+            out.write("\n\n\n")
+    out_path = project_dir / f"{safe_topic}_初稿.docx"
+    pypandoc.convert_file(str(combined), "docx", outputfile=str(out_path))
+    combined.unlink()
+    print(f"✅ Word 初稿已生成（pypandoc）：{out_path.name}")
+    sys.exit(0)
+except ImportError:
+    pass
+except Exception as e:
+    print(f"⚠️  pypandoc 失败：{e}，尝试 python-docx")
+
+# 方案2：python-docx
+try:
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.styles["Normal"].font.name = "宋体"
+    doc.styles["Normal"].font.size = Pt(12)
+
+    for p in available:
+        content = p.read_text(encoding="utf-8")
+        for line in content.split("\n"):
+            if line.startswith("### "):
+                doc.add_heading(line[4:].strip(), level=3)
+            elif line.startswith("## "):
+                doc.add_heading(line[3:].strip(), level=2)
+            elif line.startswith("# "):
+                doc.add_heading(line[2:].strip(), level=1)
+            elif line.startswith(("- ", "* ")):
+                doc.add_paragraph(line[2:].strip(), style="List Bullet")
+            elif line.strip() in ("", "---"):
+                pass
+            else:
+                clean = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+                clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+                clean = re.sub(r"`(.+?)`", r"\1", clean)
+                clean = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", clean)
+                if clean.strip():
+                    doc.add_paragraph(clean.strip())
+        doc.add_page_break()
+
+    out_path = project_dir / f"{safe_topic}_初稿.docx"
+    doc.save(str(out_path))
+    print(f"✅ Word 初稿已生成（python-docx）：{out_path.name}")
+    sys.exit(0)
+except ImportError:
+    pass
+
+# 方案3：合并为单个 md（降级）
+out_path = project_dir / f"{safe_topic}_初稿.md"
+with open(out_path, "w", encoding="utf-8") as out:
+    for p in available:
+        out.write(p.read_text(encoding="utf-8"))
+        out.write("\n\n---\n\n")
+print(f"⚠️  未安装 python-docx/pypandoc，已生成合并 md：{out_path.name}")
+print(f"     安装 Word 支持：pip install python-docx")
+PYEOF
+```
+
+```
+[🛡️ 自检日志]
+□ 完稿清单已输出，各章节文件路径已确认
+□ Word 合成脚本已执行（查看上方输出确认是否成功）
+□ 若显示"未安装"，提示用户执行 pip install python-docx 后重新运行合成步骤
 ```
 
 ---
