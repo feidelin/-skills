@@ -330,11 +330,120 @@ class TAAgent:
 
             print(f"✅ CP{cp_num} 完成 → 输出文件：{result.get('outputs', [])}")
 
+        print(f"\n{'─'*60}")
+        print(f"▶ 后处理：合并章节 → Word 初稿")
+        print(f"{'─'*60}")
+        word_path = self.assemble_word_draft()
+
         print(f"\n{'='*60}")
         print(f"[TA-Agent] 全部12个检查点已完成 ✅")
         print(f"最终报告：{self.state.project_dir}/final_report.md")
+        if word_path:
+            print(f"Word 初稿：{word_path}")
         print(f"{'='*60}")
         self.state.print_status()
+
+    def assemble_word_draft(self) -> str:
+        """将各章节 md 文件按论文顺序合并为完整 Word 初稿（.docx）"""
+        chapter_files = [
+            "title_abstract_keywords.md",
+            "introduction.md",
+            "literature_review.md",
+            "framework_section.md",
+            "methods.md",
+            "findings.md",
+            "discussion.md",
+        ]
+
+        available = [
+            self.state.project_dir / f
+            for f in chapter_files
+            if (self.state.project_dir / f).exists()
+        ]
+
+        if not available:
+            print("  ⚠️  未找到任何章节文件，跳过 Word 生成")
+            return ""
+
+        ri = self.state.get_research_info()
+        topic = ri.get("topic", "论文初稿")
+        safe_topic = re.sub(r'[/\\:*?"<>|]', "_", topic)
+
+        # ── 方案1：pypandoc（最佳格式质量）──────────────────────
+        try:
+            import pypandoc
+            combined_md = self.state.project_dir / "_draft_combined.md"
+            with open(combined_md, "w", encoding="utf-8") as out:
+                for fpath in available:
+                    out.write(fpath.read_text(encoding="utf-8"))
+                    out.write("\n\n\n")
+            output_path = self.state.project_dir / f"{safe_topic}_初稿.docx"
+            pypandoc.convert_file(str(combined_md), "docx", outputfile=str(output_path))
+            combined_md.unlink()
+            print(f"  ✅ Word 初稿已生成（pypandoc）：{output_path.name}")
+            return str(output_path)
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"  ⚠️  pypandoc 转换失败：{e}，尝试备选方案")
+
+        # ── 方案2：python-docx（基础 markdown 解析）─────────────
+        try:
+            from docx import Document
+            from docx.shared import Pt
+
+            doc = Document()
+
+            # 设置正文字体
+            normal = doc.styles["Normal"]
+            normal.font.name = "宋体"
+            normal.font.size = Pt(12)
+
+            for fpath in available:
+                content = fpath.read_text(encoding="utf-8")
+                self._md_to_docx(doc, content)
+                doc.add_page_break()
+
+            output_path = self.state.project_dir / f"{safe_topic}_初稿.docx"
+            doc.save(str(output_path))
+            print(f"  ✅ Word 初稿已生成（python-docx）：{output_path.name}")
+            return str(output_path)
+        except ImportError:
+            pass
+
+        # ── 方案3：降级为合并 md ─────────────────────────────────
+        output_path = self.state.project_dir / f"{safe_topic}_初稿.md"
+        with open(output_path, "w", encoding="utf-8") as out:
+            for fpath in available:
+                out.write(fpath.read_text(encoding="utf-8"))
+                out.write("\n\n---\n\n")
+        print(f"  ⚠️  未安装 python-docx/pypandoc，已生成合并 md：{output_path.name}")
+        print(f"       安装 Word 支持：pip install python-docx")
+        return str(output_path)
+
+    def _md_to_docx(self, doc, markdown_text: str):
+        """将 markdown 文本转为 docx 段落（基础实现）"""
+        from docx.shared import Pt
+
+        for line in markdown_text.split("\n"):
+            if line.startswith("### "):
+                doc.add_heading(line[4:].strip(), level=3)
+            elif line.startswith("## "):
+                doc.add_heading(line[3:].strip(), level=2)
+            elif line.startswith("# "):
+                doc.add_heading(line[2:].strip(), level=1)
+            elif line.startswith(("- ", "* ")):
+                doc.add_paragraph(line[2:].strip(), style="List Bullet")
+            elif line.strip() in ("", "---"):
+                pass
+            else:
+                # 去除行内 markdown 标记，保留纯文本
+                clean = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+                clean = re.sub(r"\*(.+?)\*", r"\1", clean)
+                clean = re.sub(r"`(.+?)`", r"\1", clean)
+                clean = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", clean)
+                if clean.strip():
+                    doc.add_paragraph(clean.strip())
 
     def run_with_retry(self, cp_num: int, max_attempts: int = 3) -> dict:
         """带重试的检查点执行"""
