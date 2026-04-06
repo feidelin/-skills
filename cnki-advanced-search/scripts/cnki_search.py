@@ -66,14 +66,37 @@ class CNKISearcher:
         print(f"[5/10] 勾选CSSCI来源...")
         await self._check_cssci_filter()
 
-        print(f"[6/10] 输入检索关键词: {keyword_groups}...")
-        await self._input_keyword_groups(keyword_groups)
+        # ── 倒剥洋葱：从全组到单组逐步降级 ──────────────────
+        groups_to_try = list(keyword_groups)
+        count = 0
+        while len(groups_to_try) >= 1:
+            layer = len(keyword_groups) - len(groups_to_try) + 1
+            total_layers = len(keyword_groups)
+            print(f"\n[6/10] 输入检索关键词（第{layer}层，{len(groups_to_try)}组 AND）: {groups_to_try}...")
+            await self._input_keyword_groups(groups_to_try)
 
-        print(f"[7/10] 执行检索...")
-        count = await self._execute_search()
+            print(f"[7/10] 执行检索...")
+            count = await self._execute_search()
+            print(f"       找到 {count} 篇论文")
+
+            if count >= 20:
+                break  # 结果足够，不降级
+
+            if len(groups_to_try) == 1:
+                break  # 已到最后一组，不再降级
+
+            # 结果不足，降级：去掉最后一组（最次要概念）
+            dropped = groups_to_try.pop()
+            print(f"       结果 < 20篇，自动降至第{layer+1}层（去掉组：{dropped[:30]}...）")
+            # 重新导航，清空已填关键词
+            await self._navigate_to_advanced_search()
+            await self._check_captcha_and_wait()
+            await self._select_journal_category()
+            await self._check_cssci_filter()
+
         if count == 0:
-            raise CNKINoResults("检索结果为0，请调整关键词后重试。")
-        print(f"       找到 {count} 篇论文")
+            raise CNKINoResults("所有层级检索结果均为0，请调整关键词后重试。")
+        # ────────────────────────────────────────────────────
 
         print(f"[8/10] 按被引量排序...")
         await self._sort_by_citations()
@@ -185,68 +208,53 @@ class CNKISearcher:
             print(f"  [!] 勾选CSSCI时出错: {e}，继续执行...")
 
     async def _input_keyword_groups(self, groups: list[str]):
-        """填入关键词，多组时点击'+'添加新行并切换字段为主题"""
+        """填入关键词：主题检索区 dl#gradetxt，每组一个 dd 行，+按钮为 #gradetxt a.add-group"""
         await asyncio.sleep(self.delay)
 
-        # 第一组：填入默认存在的第一个主题检索框
-        first_input = self.page.locator('input[placeholder*="检索词"], input.search-input, .search-box input[type="text"]').first
-        try:
-            await first_input.wait_for(timeout=5000)
-            await first_input.fill(groups[0])
-        except Exception:
-            # 备用：用 evaluate 填入
-            await self.page.evaluate(f"""
-                () => {{
-                    const inputs = document.querySelectorAll('input[type="text"]');
-                    const input = [...inputs].find(i => i.closest('.search-row, .input-box, td'));
-                    if (input) {{ input.value = {repr(groups[0])}; input.dispatchEvent(new Event('input')); }}
-                }}
+        # 第一组：填入 #gradetxt 第一行的 input
+        result0 = await self.page.evaluate(f"""
+            () => {{
+                const input = document.querySelector('#gradetxt dd input[type="text"]');
+                if (!input) return 'not found';
+                input.value = {repr(groups[0])};
+                input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return 'filled: ' + input.value.substring(0, 30);
+            }}
+        """)
+        print(f"  [i] 第1组填入: {result0}")
+        await asyncio.sleep(self.delay)
+
+        # 后续组：逐一点击 #gradetxt 内的"+"，再填入新行 input
+        for i, group in enumerate(groups[1:], 2):
+            # 点击 #gradetxt 的"+"按钮（不是作者区的+）
+            clicked = await self.page.evaluate("""
+                () => {
+                    const btn = document.querySelector('#gradetxt a.add-group');
+                    if (btn) { btn.click(); return true; }
+                    return false;
+                }
             """)
-        await asyncio.sleep(self.delay)
-
-        # 多组关键词
-        for i, group in enumerate(groups[1:], 1):
-            # 点击"+"按钮添加新行
-            try:
-                add_btn = self.page.locator('.add-btn, button:has-text("+"), .btn-add').first
-                await add_btn.click(timeout=3000)
-            except Exception:
-                await self.page.evaluate("""
-                    () => {
-                        const btns = [...document.querySelectorAll('button, a, span')];
-                        const addBtn = btns.find(b => b.textContent.trim() === '+' || b.className.includes('add'));
-                        if (addBtn) addBtn.click();
-                    }
-                """)
+            if not clicked:
+                print(f"  [!] 第{i}组：未找到 #gradetxt a.add-group，跳过")
+                break
             await asyncio.sleep(self.delay)
 
-            # 获取新增的检索行，切换字段类型为"主题"
-            await self.page.evaluate(f"""
+            # 填入最新一行（dd:last-of-type 或 最后一个 dd 的 input）
+            result = await self.page.evaluate(f"""
                 () => {{
-                    const rows = document.querySelectorAll('.search-row, tr.search-item, .input-line');
-                    const lastRow = rows[rows.length - 1];
-                    if (!lastRow) return;
-
-                    // 切换字段下拉框为"主题"
-                    const selects = lastRow.querySelectorAll('select');
-                    for (const sel of selects) {{
-                        const options = [...sel.options];
-                        const topicOpt = options.find(o => o.text.includes('主题'));
-                        if (topicOpt) {{
-                            sel.value = topicOpt.value;
-                            sel.dispatchEvent(new Event('change'));
-                            break;
-                        }}
-                    }}
-
-                    // 填入关键词
-                    const input = lastRow.querySelector('input[type="text"]');
-                    if (input) {{
-                        input.value = {repr(group)};
-                        input.dispatchEvent(new Event('input'));
-                    }}
+                    const dds = document.querySelectorAll('#gradetxt dd');
+                    const lastDd = dds[dds.length - 1];
+                    if (!lastDd) return 'no dd found';
+                    const input = lastDd.querySelector('input[type="text"]');
+                    if (!input) return 'no input in last dd';
+                    input.value = {repr(group)};
+                    input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    return 'filled: ' + input.value.substring(0, 30);
                 }}
             """)
+            print(f"  [i] 第{i}组填入: {result}")
             await asyncio.sleep(self.delay)
 
     async def _execute_search(self) -> int:
