@@ -78,13 +78,11 @@ class CNKISearcher:
         print(f"[8/10] 按被引量排序...")
         await self._sort_by_citations()
 
-        print(f"[9/10] 切换每页50条并全选论文（最多{max_results}篇）...")
+        print(f"[9/10] 切换每页50条...")
         await self._set_50_per_page()
-        selected = await self._select_papers(max_results)
-        print(f"       已选中 {selected} 篇")
 
-        print(f"[10/10] 导出文献（查新引文格式）...")
-        articles = await self._export_and_parse()
+        print(f"[10/10] 逐页选中并导出（最多{max_results}篇）...")
+        articles = await self._select_and_export_by_page(max_results)
         return articles
 
     async def _navigate_to_advanced_search(self):
@@ -128,73 +126,60 @@ class CNKISearcher:
             pass  # islogin 不存在时忽略
 
     async def _select_journal_category(self):
-        """点击底部的'学术期刊'类别选项卡，等待 CSSCI 过滤区渲染完成"""
+        """点击底部 .doctype-menus 中的'学术期刊'选项卡，等待 CSSCI 过滤区渲染完成"""
         await asyncio.sleep(self.delay)
         try:
             clicked = await self.page.evaluate("""
                 () => {
-                    const candidates = [...document.querySelectorAll('a, li, span, div')];
-                    const el = candidates.find(e =>
-                        e.children.length <= 2 &&
-                        e.textContent.trim() === '学术期刊'
-                    );
-                    if (el) { el.click(); return el.tagName + '.' + el.className; }
+                    // 精确定位 .doctype-menus 中 resource="JOURNAL" 的链接
+                    const journalLink = document.querySelector('.doctype-menus a[resource="JOURNAL"]');
+                    if (journalLink) { journalLink.click(); return 'doctype-menus:JOURNAL'; }
+                    // 备用：.doctype-menus 中文字为"学术期刊"的 a
+                    const menuLinks = [...document.querySelectorAll('.doctype-menus a')];
+                    const byText = menuLinks.find(a => a.textContent.trim() === '学术期刊');
+                    if (byText) { byText.click(); return 'doctype-menus:text'; }
                     return false;
                 }
             """)
             print(f"  [i] 学术期刊点击: {clicked}")
 
-            # 专门等待 CSSCI 的 checkbox（key="CSI"）出现，避免提前返回
+            # 等待 CSSCI checkbox（key="CSI"）渲染出来
             try:
                 await self.page.wait_for_function(
-                    '() => !!document.querySelector(\'input[key="CSI"]\')',
-                    timeout=8000
+                    'function(){ return !!document.querySelector(\'input[key="CSI"]\'); }',
+                    timeout=12000
                 )
                 print("  [i] CSSCI checkbox 已就绪")
             except Exception:
-                # networkidle 兜底
-                try:
-                    await self.page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    await asyncio.sleep(3)
+                await asyncio.sleep(3)
                 print("  [!] 等待 CSSCI checkbox 超时，继续执行")
 
         except Exception as e:
             print(f"  [!] 选择学术期刊时出错: {e}，继续执行...")
 
     async def _check_cssci_filter(self):
-        """尝试勾选CSSCI来源类别。注：知网新版已移除该复选框，此步骤会静默跳过。"""
+        """勾选 CSSCI 来源类别：先取消"全部期刊"，再勾选 CSSCI。"""
         await asyncio.sleep(self.delay)
         try:
             result = await self.page.evaluate("""
                 () => {
-                    // 方法1：key="CSI"（旧版知网）
                     const cssiCb = document.querySelector('input[key="CSI"]');
-                    if (cssiCb) {
-                        const allCb = document.querySelector('input[key="all"], input[name="all"]');
-                        if (allCb && allCb.checked) allCb.click();
-                        if (!cssiCb.checked) { cssiCb.click(); }
-                        return 'checked:CSI';
+                    if (!cssiCb) return 'not available';
+
+                    // 取消"全部期刊"（name="all"）
+                    const allCb = document.querySelector('input[name="all"]');
+                    if (allCb && allCb.checked) {
+                        allCb.click();
                     }
-                    // 方法2：label 文字含 CSSCI
-                    const labels = [...document.querySelectorAll('label')];
-                    for (const lbl of labels) {
-                        if (lbl.textContent.includes('CSSCI')) {
-                            const cb = lbl.querySelector('input[type="checkbox"]')
-                                     || document.getElementById(lbl.htmlFor);
-                            if (cb) {
-                                if (!cb.checked) cb.click();
-                                return 'checked:label';
-                            }
-                        }
+
+                    // 勾选 CSSCI
+                    if (!cssiCb.checked) {
+                        cssiCb.click();
                     }
-                    return 'not available';
+                    return cssiCb.checked ? 'checked:CSI' : 'click-sent:CSI';
                 }
             """)
-            if result == 'not available':
-                print("  [i] CSSCI复选框：知网新版已移除，将检索全部学术期刊（含CSSCI）")
-            else:
-                print(f"  [i] CSSCI勾选: {result}")
+            print(f"  [i] CSSCI勾选: {result}")
             await asyncio.sleep(self.delay)
         except Exception as e:
             print(f"  [!] 勾选CSSCI时出错: {e}，继续执行...")
@@ -386,13 +371,14 @@ class CNKISearcher:
                 }
             """)
             print(f"  [i] 每页50条: {result[:120]}")
-            await asyncio.sleep(self.delay * 2)
 
-            # 等待页面用新的每页数量重新渲染
+            # 等待页面用50条重新渲染：networkidle + 固定延迟
             try:
-                await self.page.wait_for_load_state("networkidle", timeout=8000)
+                await self.page.wait_for_load_state("networkidle", timeout=12000)
             except Exception:
-                await asyncio.sleep(2)
+                pass
+            await asyncio.sleep(3)
+            print("  [i] 每页50条等待完成")
         except Exception as e:
             print(f"  [!] 切换每页50条时出错: {e}，继续执行...")
 
@@ -445,6 +431,78 @@ class CNKISearcher:
                 break
 
         return total_selected
+
+    async def _select_and_export_by_page(self, max_count: int) -> list[dict]:
+        """逐页全选→导出→解析，拼合结果，解决 $.filenameGet() 只捕获当前页的问题。"""
+        all_articles: list[dict] = []
+        page_num = 0
+        MAX_PAGES = 50  # 安全上限，防止无限循环
+
+        while len(all_articles) < max_count and page_num < MAX_PAGES:
+            if page_num > 0:
+                # 翻到下一页
+                try:
+                    next_btn = self.page.locator('.btn-next, a:has-text("下一页"), #PageNext').first
+                    if not await next_btn.is_visible(timeout=3000):
+                        print("       没有下一页，结束翻页")
+                        break
+                    await next_btn.click()
+                    await asyncio.sleep(self.delay * 2)
+                    try:
+                        await self.page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:
+                        await asyncio.sleep(2)
+                except Exception:
+                    break
+
+            # 全选当前页
+            await self.page.evaluate("""
+                () => {
+                    const cb = document.querySelector('#selectCheckAll1');
+                    if (cb) { cb.click(); return; }
+                    const cb2 = document.querySelector('input[name="selectCheckAll"]');
+                    if (cb2) cb2.click();
+                }
+            """)
+            await asyncio.sleep(self.delay)
+
+            # 读取当前页选中数量（CNKI 显示的是累计跨页总数）
+            count_text = await self.page.evaluate("""
+                () => {
+                    const el = document.querySelector('#selectCount, .select-count');
+                    return el ? el.textContent.trim() : '0';
+                }
+            """)
+            try:
+                total_selected = int(re.search(r'\d+', count_text).group())
+            except Exception:
+                total_selected = 0
+
+            print(f"       第{page_num + 1}页全选，累计已选: {total_selected}")
+
+            if total_selected == 0:
+                print("       无选中项，结束")
+                break
+
+            # 导出当前页（filenameGet 只捕获当前页的选中项）
+            try:
+                page_articles = await self._export_and_parse()
+                if len(page_articles) == 0:
+                    print("       本页导出为空，结束")
+                    break
+                # 重新编号避免序号重叠
+                offset = len(all_articles)
+                for a in page_articles:
+                    a['num'] = offset + a.get('num', 1)
+                all_articles.extend(page_articles)
+                print(f"       第{page_num + 1}页导出 {len(page_articles)} 篇，累计 {len(all_articles)} 篇")
+            except Exception as e:
+                print(f"  [!] 第{page_num + 1}页导出失败: {e}")
+                break
+
+            page_num += 1
+
+        return all_articles
 
     async def _export_and_parse(self) -> list[dict]:
         """触发导出、切换到导出页、提取数据、解析返回"""
@@ -506,6 +564,14 @@ class CNKISearcher:
 
         # 解析数据
         articles = parse_citation_text(raw_text)
+
+        # 关闭导出弹窗，避免浏览器阻止下一次 $.PostWindow()
+        try:
+            await export_page.close()
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
         if not articles:
             # 保存原始文本供调试
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
