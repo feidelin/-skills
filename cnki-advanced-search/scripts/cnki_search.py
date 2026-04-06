@@ -741,6 +741,7 @@ async def main():
                         help='Chrome CDP 调试端口（默认9222）')
     parser.add_argument('--min-groups', type=int, default=2,
                         help='自动降级的最少保留组数（默认2，不会自动降到1组）')
+    parser.add_argument('--delay', type=int, default=1000,
                         help='操作间延迟（毫秒，默认1000）')
     parser.add_argument('--output-dir', type=str, default=str(OUTPUT_DIR),
                         help='输出目录（默认~/Downloads/）')
