@@ -50,7 +50,8 @@ class CNKISearcher:
         self.page = page
         self.delay = delay_ms / 1000  # 转为秒
 
-    async def run(self, keyword_groups: list[str], max_results: int = 100) -> list[dict]:
+    async def run(self, keyword_groups: list[str], max_results: int = 100,
+                  min_groups: int = 2) -> list[dict]:
         print(f"\n[1/10] 导航到知网高级检索页面...")
         await self._navigate_to_advanced_search()
 
@@ -66,12 +67,11 @@ class CNKISearcher:
         print(f"[5/10] 勾选CSSCI来源...")
         await self._check_cssci_filter()
 
-        # ── 倒剥洋葱：从全组到单组逐步降级 ──────────────────
+        # ── 倒剥洋葱：从全组降级，但不低于 min_groups ────────
         groups_to_try = list(keyword_groups)
         count = 0
         while len(groups_to_try) >= 1:
             layer = len(keyword_groups) - len(groups_to_try) + 1
-            total_layers = len(keyword_groups)
             print(f"\n[6/10] 输入检索关键词（第{layer}层，{len(groups_to_try)}组 AND）: {groups_to_try}...")
             await self._input_keyword_groups(groups_to_try)
 
@@ -82,20 +82,28 @@ class CNKISearcher:
             if count >= 20:
                 break  # 结果足够，不降级
 
-            if len(groups_to_try) == 1:
-                break  # 已到最后一组，不再降级
+            # 已达到最少组数限制（默认2组）→ 停止自动降级，请Claude判断
+            if len(groups_to_try) <= min_groups:
+                if count == 0:
+                    print(f"\n[!] 已到最少保留组数({min_groups}组)，结果仍为0篇。")
+                    print(f"[!] 请检查关键词是否过于冷僻，考虑替换为上位概念后重新检索。")
+                    raise CNKINoResults(
+                        f"联合检索（{min_groups}组 AND）结果为0，建议扩展关键词至上位概念后重试。"
+                    )
+                else:
+                    print(f"\n[!] 已到最少保留组数({min_groups}组)，结果仅{count}篇（< 20）。")
+                    print(f"[!] 建议：扩展当前关键词至上位概念后重新检索，以获取更多相关文献。")
+                    print(f"[!] 本次将继续导出现有 {count} 篇。")
+                break  # 带警告继续，不再降组
 
-            # 结果不足，降级：去掉最后一组（最次要概念）
+            # 可以继续降组
             dropped = groups_to_try.pop()
-            print(f"       结果 < 20篇，自动降至第{layer+1}层（去掉组：{dropped[:30]}...）")
-            # 重新导航，清空已填关键词
+            print(f"       结果 < 20篇，自动降至第{layer+1}层（去掉组：{dropped[:40]}）")
+            # 重新导航清空已填关键词
             await self._navigate_to_advanced_search()
             await self._check_captcha_and_wait()
             await self._select_journal_category()
             await self._check_cssci_filter()
-
-        if count == 0:
-            raise CNKINoResults("所有层级检索结果均为0，请调整关键词后重试。")
         # ────────────────────────────────────────────────────
 
         print(f"[8/10] 按被引量排序...")
@@ -731,7 +739,8 @@ async def main():
                         help='最多导出论文数量（默认100，最大100）')
     parser.add_argument('--port', type=int, default=9222,
                         help='Chrome CDP 调试端口（默认9222）')
-    parser.add_argument('--delay', type=int, default=1000,
+    parser.add_argument('--min-groups', type=int, default=2,
+                        help='自动降级的最少保留组数（默认2，不会自动降到1组）')
                         help='操作间延迟（毫秒，默认1000）')
     parser.add_argument('--output-dir', type=str, default=str(OUTPUT_DIR),
                         help='输出目录（默认~/Downloads/）')
@@ -780,7 +789,8 @@ async def main():
 
         try:
             searcher = CNKISearcher(page, delay_ms=args.delay)
-            articles = await searcher.run(args.keywords, max_results=max_results)
+            articles = await searcher.run(args.keywords, max_results=max_results,
+                                          min_groups=args.min_groups)
 
             # 生成文件名
             keyword_summary = "_".join(args.keywords[0].split()[:2])[:20]
