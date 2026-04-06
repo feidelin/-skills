@@ -69,7 +69,29 @@ class CNKISearcher:
 
         # ── 倒剥洋葱：从全组降级，但不低于 min_groups ────────
         groups_to_try = list(keyword_groups)
-        count = 0
+        combined_articles: list[dict] = []
+        seen_titles: set[str] = set()
+
+        async def _export_current_layer(n: int) -> list[dict]:
+            """对当前检索结果排序、导出，返回解析后的文章列表。"""
+            print(f"[8/10] 按被引量排序...")
+            await self._sort_by_citations()
+            print(f"[9/10] 切换每页50条...")
+            await self._set_50_per_page()
+            print(f"[10/10] 逐页选中并导出（最多{n}篇）...")
+            return await self._select_and_export_by_page(n)
+
+        def _merge(new_articles: list[dict]):
+            """去重合并到 combined_articles（按标题去重）。"""
+            added = 0
+            for a in new_articles:
+                key = a.get('title', '').strip()
+                if key and key not in seen_titles:
+                    seen_titles.add(key)
+                    combined_articles.append(a)
+                    added += 1
+            return added
+
         while len(groups_to_try) >= 1:
             layer = len(keyword_groups) - len(groups_to_try) + 1
             print(f"\n[6/10] 输入检索关键词（第{layer}层，{len(groups_to_try)}组 AND）: {groups_to_try}...")
@@ -79,42 +101,40 @@ class CNKISearcher:
             count = await self._execute_search()
             print(f"       找到 {count} 篇论文")
 
-            if count >= 20:
-                break  # 结果足够，不降级
+            is_final = (count >= 20) or (len(groups_to_try) <= min_groups)
 
-            # 已达到最少组数限制（默认2组）→ 停止自动降级，请Claude判断
-            if len(groups_to_try) <= min_groups:
-                if count == 0:
-                    print(f"\n[!] 已到最少保留组数({min_groups}组)，结果仍为0篇。")
-                    print(f"[!] 请检查关键词是否过于冷僻，考虑替换为上位概念后重新检索。")
-                    raise CNKINoResults(
-                        f"联合检索（{min_groups}组 AND）结果为0，建议扩展关键词至上位概念后重试。"
-                    )
-                else:
-                    print(f"\n[!] 已到最少保留组数({min_groups}组)，结果仅{count}篇（< 20）。")
+            if count > 0:
+                remaining = max_results - len(combined_articles)
+                if remaining > 0:
+                    layer_articles = await _export_current_layer(min(count, remaining))
+                    added = _merge(layer_articles)
+                    print(f"       本层新增 {added} 篇（去重后累计 {len(combined_articles)} 篇）")
+
+            if is_final:
+                if count == 0 and len(groups_to_try) <= min_groups:
+                    if len(combined_articles) == 0:
+                        print(f"\n[!] 已到最少保留组数({min_groups}组)，结果仍为0篇。")
+                        print(f"[!] 请检查关键词是否过于冷僻，考虑替换为上位概念后重新检索。")
+                        raise CNKINoResults(
+                            f"联合检索（{min_groups}组 AND）结果为0，建议扩展关键词至上位概念后重试。"
+                        )
+                    else:
+                        print(f"\n[!] 最底层结果为0篇，但已从上层汇总 {len(combined_articles)} 篇。")
+                elif count > 0 and count < 20 and len(groups_to_try) <= min_groups:
+                    print(f"\n[!] 已到最少保留组数({min_groups}组)，当前层仅{count}篇（< 20）。")
                     print(f"[!] 建议：扩展当前关键词至上位概念后重新检索，以获取更多相关文献。")
-                    print(f"[!] 本次将继续导出现有 {count} 篇。")
-                break  # 带警告继续，不再降组
+                break
 
-            # 可以继续降组
+            # 可以继续降组，但先把本层结果已导出，再重新导航
             dropped = groups_to_try.pop()
-            print(f"       结果 < 20篇，自动降至第{layer+1}层（去掉组：{dropped[:40]}）")
-            # 重新导航清空已填关键词
+            print(f"       自动降至第{layer+1}层（去掉组：{dropped[:40]}）")
             await self._navigate_to_advanced_search()
             await self._check_captcha_and_wait()
             await self._select_journal_category()
             await self._check_cssci_filter()
         # ────────────────────────────────────────────────────
 
-        print(f"[8/10] 按被引量排序...")
-        await self._sort_by_citations()
-
-        print(f"[9/10] 切换每页50条...")
-        await self._set_50_per_page()
-
-        print(f"[10/10] 逐页选中并导出（最多{max_results}篇）...")
-        articles = await self._select_and_export_by_page(max_results)
-        return articles
+        return combined_articles
 
     async def _navigate_to_advanced_search(self):
         await self.page.goto("https://kns.cnki.net/kns8s/AdvSearch", wait_until="domcontentloaded", timeout=30000)
