@@ -88,7 +88,7 @@ pip install python-docx
 
 | Skill | 功能 / Description | 安装 / Install |
 |---|---|---|
-| `cnki-advanced-search` | 知网高级检索自动化，支持CSSCI筛选与多关键词组合 / Automated CNKI advanced search with CSSCI filtering and multi-keyword combinations | `claude skill install https://github.com/yipng05-max/-skills/tree/main/cnki-advanced-search` |
+| `cnki-advanced-search` | 知网三阶段检索：①主体联合检索（倒剥洋葱法）②独立补充检索（背景+理论文献）③汇总去重分类 Excel / Three-phase CNKI search: joint search with onion-peeling, supplementary independent searches, and deduplicated categorized Excel output | `claude skill install https://github.com/yipng05-max/-skills/tree/main/cnki-advanced-search` |
 | `cjournal-analyzer` | C刊期刊全面分析，自动抓取近5年文章目录与作者信息 / Comprehensive CSSCI journal analysis — auto-fetches article lists and author data from the past 5 years | `claude skill install https://github.com/yipng05-max/-skills/tree/main/cjournal-analyzer` |
 | `pdf-bib-import` | 批量提取PDF论文题录并导入飞书多维表格 / Batch extract bibliographic metadata from PDFs and import into Feishu Base | `claude skill install https://github.com/yipng05-max/-skills/tree/main/pdf-bib-import` |
 
