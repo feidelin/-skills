@@ -1,298 +1,270 @@
 ---
 name: foreign-literature-search
 description: >
-  外文学术文献检索工具（社会科学方向）。当用户提供研究关键词时，自动构建英文检索式，
-  通过 WebSearch 在 Google Scholar 及 SSCI 社会学核心期刊站点检索相关文献，
-  提取题录信息（标题、作者、年份、期刊、摘要、DOI），同步生成适用于
-  Web of Science / Scopus 的布尔检索式供用户在机构数据库中使用，
-  最终将结果保存为 Excel 文件。
-  触发条件：用户说"帮我检索外文文献""搜索英文文献""Google Scholar 检索"
-  "SSCI文献检索""WoS检索式""检索外文资料""找相关英文论文"，
-  或在 ta-research-AFP / ta-research-workflow 到达文献检索检查点时。
+  外文学术文献检索工具（社会科学方向）。基于 OpenAlex 开放 API（无需机构账号、无需 API key），
+  执行三阶段检索：①主体联合检索（最具体组主检索+其他组后置文本过滤，实现真正 AND 语义）
+  ②独立补充检索（研究对象背景文献 + 核心理论文献）③汇总去重分类 Excel。
+  同步生成 WoS/Scopus 布尔检索式供有机构权限的用户使用。
+  触发条件：用户提到需要检索外文/英文/SSCI文献、检索国外学术数据库、帮我搜英文文献、
+  foreign literature search、检索 SSCI/SCI 论文等。
 ---
 
-# 外文学术文献检索工具（社会科学方向）
+# 外文学术文献检索工具（OpenAlex 主力版）
 
-通过 WebSearch 系统检索外文文献，同步生成 WoS/Scopus 布尔检索式。
-无需机构账号即可运行；布尔检索式供有数据库权限时手动使用。
+调用 Python 脚本（`scripts/openalex_search.py`）通过 **OpenAlex 开放 API** 执行全自动检索，
+无需机构账号、无需 API key、无需浏览器。
 
----
+## 依赖安装
 
-## Step 0：解析关键词与语言处理
-
-从用户输入中提取研究关键词，执行以下处理：
-
-### 0.1 中译英
-
-若用户提供中文关键词，自动翻译为英文并给出同义词/近义词扩展：
-
-| 中文 | 英文主词 | 同义词扩展 |
-|------|---------|----------|
-| 平台经济 | platform economy | platform labor / gig economy / digital platform |
-| 数字劳动 | digital labor | platform work / crowdwork / algorithmic management |
-| 社会流动 | social mobility | upward mobility / status attainment |
-| 身份认同 | identity | self-concept / identification / identity construction |
-
-### 0.2 构建检索组
-
-多个概念之间用 AND 连接，同义词之间用 OR 连接：
-
-```
-示例：研究"平台工人的身份认同"
-→ 检索式：
-  ("platform worker" OR "gig worker" OR "platform labor")
-  AND
-  ("identity" OR "self-concept" OR "identification")
+```bash
+pip install openpyxl
 ```
 
-### 0.3 确认
-
-向用户展示翻译结果和检索分组，确认后再执行检索。
-若用户已提供英文关键词，直接构建检索组，无需翻译。
+> OpenAlex API 无需注册，每秒最多 10 次请求，脚本已内置限速。
 
 ---
 
-## Step 1：生成 WoS/Scopus 布尔检索式
+## Step 0: 解析输入并制定检索策略
 
-在执行 WebSearch 之前，先输出布尔检索式供用户在机构数据库使用：
+### 0.1 关键词组设计原则
+
+从研究选题中提取 **2-3 个核心概念组**，每组内扩展同义词（`+` 分隔），组间取 AND 交集。
+
+**关键注意**：过滤组的词语应足够**具体**，避免使用 "meaning"、"identity" 这类极泛词（会在所有社科文献中出现）。优先使用复合短语：
+
+| 避免（太泛） | 改用（更具体） |
+|------------|--------------|
+| `meaning` | `meaning of work + work meaning + meaningful work` |
+| `identity` | `occupational identity + worker identity + professional identity` |
+| `control` | `labor control + algorithmic control + managerial control` |
+| `change` | `livelihood change + occupational transition + career change` |
+
+**选题示例**："快车司机的生计变迁与意义建构"
 
 ```
-━━ Web of Science / Scopus 检索式 ━━━━━━━━━━━━━━━━━━━━━━
-TS = (
-  ("platform worker" OR "gig worker" OR "platform labor" OR "crowdwork")
-  AND
-  ("identity" OR "self-concept" OR "identification" OR "identity construction")
-)
+组1（研究对象，主检索）：gig economy + platform labor + ride-hailing + Uber driver + DiDi
+组2（核心议题，后置过滤）：meaning of work + work meaning + occupational identity + livelihood
+```
 
-WoS 筛选建议：
-  数据库：Web of Science Core Collection
-  版本限定：WOS.SSCI（社会科学引文索引）
-  时间范围：2015–2025（可根据需要调整）
-  排序方式：Times Cited - descending（被引量降序）
+### 0.2 上位概念兜底
 
-Scopus 检索式（等价）：
-  TITLE-ABS-KEY(("platform worker" OR "gig worker" OR "platform labor")
-  AND ("identity" OR "self-concept" OR "identification"))
-  AND SUBJAREA(SOCI OR PSYC OR ECON)
+若某组词过于精确（新兴概念、特定群体），主动加入上位概念：
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+| 精确词 | 上位概念兜底 |
+|--------|------------|
+| `ride-hailing driver` | `+ gig worker + platform worker + precarious worker` |
+| `meaning-making` | `+ identity work + self-concept + sensemaking` |
+| `algorithmic management` | `+ digital labor + platform capitalism` |
+
+### 0.3 向用户确认策略
+
+执行前列出检索方案，等用户确认：
+
+```
+【主体联合检索】
+组1（主检索）：gig economy + platform labor + ride-hailing + Uber driver
+组2（后置过滤）：meaning of work + work meaning + occupational identity + livelihood
+
+【独立补充检索】（主检索完成后必做）
+补充A（研究对象背景）：precarious work + informal economy × labor market + working conditions
+补充B（核心理论）：identity work + sensemaking + meaning-making × labor + work + occupation
+
+WoS 布尔检索式（同步生成，供有机构权限用户使用）
 ```
 
 ---
 
-## Step 2：WebSearch 多轮检索
+## Step 0.5: 生成 WoS / Scopus 布尔检索式
 
-通过 3 轮 WebSearch 系统覆盖目标文献：
+在执行脚本之前，根据关键词组生成标准布尔检索式，输出给用户备用：
 
-### 第一轮：Google Scholar 综合检索
-
-构建检索查询，优先找高被引综述和奠基性文献：
-
+**Web of Science（SSCI）**：
 ```
-搜索词模板：
-"{核心词A}" "{核心词B}" site:scholar.google.com
-"{核心词A}" "{核心词B}" review sociology
-"{核心词A}" "{核心词B}" seminal theory
+TS = ("gig economy" OR "platform labor" OR "ride-hailing" OR "Uber driver")
+AND TS = ("meaning of work" OR "occupational identity" OR "livelihood" OR "worker identity")
+AND WC = (Sociology OR "Industrial Relations" OR "Labor Relations")
 ```
 
-### 第二轮：SSCI 社会学核心期刊定向检索
-
-针对以下期刊站点执行定向搜索：
-
-**顶级综合社会学期刊**
-- American Journal of Sociology (AJS)：`site:journals.uchicago.edu/journal/ajs`
-- American Sociological Review (ASR)：`site:journals.sagepub.com/home/asr`
-- Social Forces：`site:academic.oup.com/sf`
-- Theory and Society：`site:link.springer.com/journal/11186`
-- Annual Review of Sociology：`site:annualreviews.org/journal/soc`
-
-**数字社会学 / 劳工 / 组织方向**
-- Work, Employment and Society：`site:journals.sagepub.com/home/wes`
-- New Media & Society：`site:journals.sagepub.com/home/nms`
-- Organization Studies：`site:journals.sagepub.com/home/oss`
-- Information, Communication & Society：`site:tandfonline.com/journals/rics20`
-
-**综合社会科学**
-- Social Science Research：`site:sciencedirect.com/journal/social-science-research`
-- Current Sociology：`site:journals.sagepub.com/home/csi`
-
-检索词格式：`"{核心词A}" "{核心词B}" site:[期刊站点]`
-
-### 第三轮：近5年新文献补充
-
-针对近5年文献做补充检索，确保覆盖最新进展：
-
+**Scopus**：
 ```
-"{核心词A}" "{核心词B}" 2020 2021 2022 2023 2024 sociology
+TITLE-ABS-KEY("gig economy" OR "platform labor" OR "ride-hailing")
+AND TITLE-ABS-KEY("meaning of work" OR "occupational identity" OR "livelihood")
+AND SUBJAREA(SOCI OR PSYC OR ECON OR BUSI)
 ```
 
 ---
 
-## Step 3：文献筛选与信息提取
+## Step 1: 执行主体联合检索
 
-### 3.1 筛选标准
+```bash
+python3 /Users/songyiping/.claude/skills/foreign-literature-search/scripts/openalex_search.py \
+  --keywords "gig economy + platform labor + ride-hailing + Uber driver" \
+  --keywords "meaning of work + work meaning + occupational identity + livelihood" \
+  --max-results 100 \
+  --topic "快车司机生计变迁与意义建构" \
+  --category "直接相关（平台劳动×意义建构）" \
+  --color "D9E1F2" \
+  --output-dir ~/Downloads
+```
 
-从 WebSearch 结果中筛选符合以下条件的文献：
+**脚本工作原理**：
+1. 以词数最少（最具体）的组作为**主检索**，对每个同义词调用 OpenAlex API，合并结果（OR 逻辑）
+2. 对每篇论文的 title+abstract 做**后置文本过滤**：确保包含其他每个组的至少一个词
+3. 若过滤后 < 20 篇，自动放宽为"任意一个额外组匹配"
+4. 按被引量降序排列，输出前 N 篇
 
-| 优先级 | 标准 |
-|--------|------|
-| P1（必选）| SSCI 来源期刊 + 主题高度相关 |
-| P2（优先）| 被引量高（100次以上） |
-| P3（补充）| 近5年发表（2020-2025） |
-| 排除 | 书评、会议论文（非期刊）、非学术来源 |
+**参数说明**：
 
-### 3.2 提取字段
-
-每篇文献提取以下信息：
-
-| 字段 | 说明 |
+| 参数 | 说明 |
 |------|------|
-| 序号 | 1-N |
-| 标题 | 英文原标题 |
-| 作者 | 所有作者（Last, F.M. 格式） |
-| 年份 | 发表年份 |
-| 期刊 | 完整期刊名 |
-| 卷期页 | Volume(Issue): Pages |
-| DOI/URL | 可访问链接（优先 DOI） |
-| 摘要 | 英文摘要（如可获取） |
-| 被引次数 | 若 WebSearch 结果中包含 |
-| SSCI 标注 | ✅ 已确认 / ⚠️ 待核实 |
-
-### 3.3 去重
-
-检查三轮检索结果中的重复文献，以第一次出现的记录为准。
+| `--keywords` | 关键词组，每个 `--keywords` 为一组，组内 `+` 分隔同义词 |
+| `--max-results` | 最多返回篇数（默认100） |
+| `--year-from` / `--year-to` | 年份范围（如 `--year-from 2010`） |
+| `--no-soc-filter` | 关闭社会科学 concept 过滤（默认开启） |
+| `--category` | 文献类别标签（用于最终 Excel 分类） |
+| `--color` | Excel 行颜色，蓝=`D9E1F2`，绿=`E2EFDA`，黄=`FFF2CC`，橙=`FCE4D6` |
+| `--output-file` | 指定输出路径 |
+| `--topic` | 检索主题（用于文件名） |
 
 ---
 
-## Step 4：输出检索报告
+## Step 2: 独立补充检索（必做）
 
-在保存 Excel 之前，输出检索摘要：
+主检索完成后，对各核心概念分别做独立检索，获取间接相关文献：
 
+**补充检索 A：研究对象背景文献**
+```bash
+python3 /Users/songyiping/.claude/skills/foreign-literature-search/scripts/openalex_search.py \
+  --keywords "precarious work + informal work + gig worker + platform worker" \
+  --keywords "labor market + working conditions + employment + job quality" \
+  --max-results 60 \
+  --topic "快车司机生计变迁与意义建构" \
+  --category "间接相关-劳动条件背景" \
+  --color "E2EFDA" \
+  --output-file ~/Downloads/外文补充A_劳动背景.xlsx
 ```
-━━ 外文文献检索报告 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-检索主题：[研究主题]
-检索词：[英文检索组]
-检索时间：[日期]
-──────────────────────────────────────────────────────
-检索来源：
-  · Google Scholar（综合）：[N] 篇相关
-  · 定向期刊检索：[N] 篇相关
-  · 近5年补充：[N] 篇相关
-  · 去重后总计：[N] 篇
-──────────────────────────────────────────────────────
-期刊分布（前5）：
-  1. [期刊名] — [N] 篇
-  2. [期刊名] — [N] 篇
-  ...
-年份分布：
-  2020-2025：[N] 篇 | 2015-2019：[N] 篇 | 2015前：[N] 篇
-──────────────────────────────────────────────────────
-⚠️ 提示：以下文献需通过机构数据库确认全文访问权限。
-   建议将 WoS 检索式（Step 1）在机构 VPN 环境下运行以获取完整结果。
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**补充检索 B：核心理论文献**
+```bash
+python3 /Users/songyiping/.claude/skills/foreign-literature-search/scripts/openalex_search.py \
+  --keywords "identity work + sensemaking + meaning-making + self-concept" \
+  --keywords "labor + work + occupation + employment" \
+  --max-results 60 \
+  --topic "快车司机生计变迁与意义建构" \
+  --category "间接相关-意义/身份认同理论" \
+  --color "FFF2CC" \
+  --output-file ~/Downloads/外文补充B_意义理论.xlsx
 ```
+
+> 补充检索结果不足 20 篇时不强制调整，但结果为 0 时需替换词汇后重试。
 
 ---
 
-## Step 5：保存为 Excel
+## Step 3: 汇总合并——输出统一分类 Excel
 
-### 5.1 生成 Excel 文件
+所有检索完成后，将全部 Excel 文件合并去重，生成统一的分类 Excel：
 
 ```python
-import json
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
-from datetime import date
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
+from pathlib import Path
 
-wb = Workbook()
+files = {
+    "直接相关（平台劳动×意义建构）":     ("D9E1F2", "~/Downloads/外文文献检索_快车司机生计变迁_YYYYMMDD.xlsx"),
+    "间接相关-劳动条件背景":              ("E2EFDA", "~/Downloads/外文补充A_劳动背景.xlsx"),
+    "间接相关-意义/身份认同理论":         ("FFF2CC", "~/Downloads/外文补充B_意义理论.xlsx"),
+}
 
-# Sheet 1: 文献列表
-ws1 = wb.active
-ws1.title = "文献列表"
+all_rows = []
+seen_titles = set()
 
-headers = ["序号", "标题", "作者", "年份", "期刊", "卷期页", "DOI/URL", "摘要", "被引次数", "SSCI"]
-header_fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
-header_font = Font(bold=True, size=11, color="FFFFFF")
+for category, (color, filepath) in files.items():
+    wb = openpyxl.load_workbook(Path(filepath).expanduser())
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    # 表头: 序号(0), 文献类别(1), 标题(2), 作者(3), 期刊(4), 年份(5),
+    #       被引量(6), DOI(7), OA全文链接(8), 主题标签(9), 摘要(10)
+    for row in rows[1:]:
+        title = str(row[2] or "").strip()
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            all_rows.append((category, color) + tuple(row[2:]))
 
-for col, h in enumerate(headers, 1):
-    cell = ws1.cell(row=1, column=col, value=h)
-    cell.font = header_font
-    cell.fill = header_fill
-    cell.alignment = Alignment(horizontal='center', vertical='center')
+wb_out = openpyxl.Workbook()
+ws_out = wb_out.active
+ws_out.title = "外文文献汇总"
 
-for i, article in enumerate(articles, 1):
-    ws1.cell(row=i+1, column=1, value=i)
-    ws1.cell(row=i+1, column=2, value=article.get('title', ''))
-    ws1.cell(row=i+1, column=3, value=article.get('authors', ''))
-    ws1.cell(row=i+1, column=4, value=article.get('year', ''))
-    ws1.cell(row=i+1, column=5, value=article.get('journal', ''))
-    ws1.cell(row=i+1, column=6, value=article.get('volume_issue_pages', ''))
-    ws1.cell(row=i+1, column=7, value=article.get('doi_url', ''))
-    cell = ws1.cell(row=i+1, column=8, value=article.get('abstract', ''))
-    cell.alignment = Alignment(wrap_text=True, vertical='top')
-    ws1.cell(row=i+1, column=9, value=article.get('citations', ''))
-    ws1.cell(row=i+1, column=10, value=article.get('ssci', ''))
+headers = ["序号", "文献类别", "标题", "作者", "期刊", "年份",
+           "被引量", "DOI", "OA全文链接", "主题标签", "摘要"]
+ws_out.append(headers)
+for cell in ws_out[1]:
+    cell.font = Font(bold=True, color="FFFFFF", size=11)
+    cell.fill = PatternFill(fill_type="solid", fgColor="1F4E79")
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-ws1.column_dimensions['A'].width = 6
-ws1.column_dimensions['B'].width = 55
-ws1.column_dimensions['C'].width = 25
-ws1.column_dimensions['D'].width = 8
-ws1.column_dimensions['E'].width = 30
-ws1.column_dimensions['F'].width = 18
-ws1.column_dimensions['G'].width = 35
-ws1.column_dimensions['H'].width = 80
-ws1.column_dimensions['I'].width = 10
-ws1.column_dimensions['J'].width = 8
+for seq, row_data in enumerate(all_rows, 1):
+    category, color = row_data[0], row_data[1]
+    ws_out.append((seq, category) + row_data[2:])
+    fill = PatternFill(fill_type="solid", fgColor=color)
+    for cell in ws_out[ws_out.max_row]:
+        cell.fill = fill
+        cell.alignment = Alignment(vertical="top", wrap_text=True)
 
-ws1.auto_filter.ref = ws1.dimensions
-ws1.freeze_panes = 'A2'
+col_widths = [4, 28, 40, 22, 22, 6, 8, 36, 36, 30, 60]
+for i, w in enumerate(col_widths, 1):
+    ws_out.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+for row in ws_out.iter_rows(min_row=2):
+    ws_out.row_dimensions[row[0].row].height = 65
+ws_out.freeze_panes = "A2"
+ws_out.auto_filter.ref = ws_out.dimensions
 
-# Sheet 2: 检索式留存
-ws2 = wb.create_sheet("检索式")
-ws2['A1'] = "WoS 检索式"
-ws2['A1'].font = Font(bold=True)
-ws2['A2'] = wos_query  # Step 1 生成的检索式
-ws2['A2'].alignment = Alignment(wrap_text=True)
-ws2.column_dimensions['A'].width = 80
+ws2 = wb_out.create_sheet("分类统计")
+ws2.append(["文献类别", "颜色", "篇数"])
+color_desc = {"D9E1F2": "蓝-直接相关", "E2EFDA": "绿-背景文献", "FFF2CC": "黄-理论文献", "FCE4D6": "橙-扩展视角"}
+for cat, (color, _) in files.items():
+    cnt = sum(1 for r in all_rows if r[0] == cat)
+    ws2.append([cat, color_desc.get(color, color), cnt])
+ws2.append(["合计（去重后）", "", len(all_rows)])
+for cell in ws2[1]: cell.font = Font(bold=True)
 
-today = date.today().strftime('%Y%m%d')
-keyword_abbr = keywords_abbr  # 关键词缩写，如 "platform-identity"
-output_path = f"~/Downloads/外文文献检索_{keyword_abbr}_{today}.xlsx"
-wb.save(output_path)
+output_path = "~/Downloads/外文文献汇总_快车司机生计变迁_YYYYMMDD.xlsx"
+wb_out.save(Path(output_path).expanduser())
+print(f"[✓] 已保存: {output_path}（共 {len(all_rows)} 篇）")
 ```
 
-安装依赖：`pip3 install openpyxl`
+---
 
-文件保存至：`~/Downloads/外文文献检索_{关键词缩写}_{日期}.xlsx`
+## Step 4: 报告结果
+
+检索完成后向用户报告：
+- 各轮检索篇数（含 API 总量参考）
+- 去重后总篇数、各类别分布
+- 汇总文件路径（打开文件）
+- 提醒用户在 WoS/Scopus 补充机构数据库检索
+
+```bash
+open ~/Downloads/外文文献汇总_*.xlsx
+```
 
 ---
 
-## Step 6：移交 literature-verifier（可选）
+## 颜色约定
 
-若在 `ta-research-AFP` 或 `ta-research-workflow` 中调用，检索结果自动传递给后续的文献核查与综述写作步骤。
-
-若单独使用，告知研究者：
-> "外文文献检索完成，已保存至 `外文文献检索_{关键词}_{日期}.xlsx`。
-> 建议将 Sheet 2 中的 WoS 检索式在机构数据库中运行，补充 WebSearch 无法触达的全文记录。
-> 如需核查文献真实性，可调用 `literature-verifier`。"
+| 类别 | 颜色 | hex |
+|------|------|-----|
+| 直接相关 | 蓝 | `D9E1F2` |
+| 间接相关-背景 | 绿 | `E2EFDA` |
+| 间接相关-理论 | 黄 | `FFF2CC` |
+| 间接相关-扩展 | 橙 | `FCE4D6` |
 
 ---
 
-## 注意事项
+## 常见问题
 
-- **WebSearch 覆盖有限**：无法替代机构数据库的完整检索；WoS 检索式是对 WebSearch 结果的重要补充
-- **摘要完整性**：WebSearch 返回的摘要可能被截断，完整摘要需通过 DOI 链接访问原文
-- **SSCI 标注**：标注"✅ 已确认"的来自已知 SSCI 期刊站点；标注"⚠️ 待核实"的来自综合搜索结果，需研究者自行确认期刊级别
-- **被引次数**：若 WebSearch 结果未提供，填"—"，可在 Google Scholar 手动查阅
-- **语言**：默认检索英文文献；如需法语/德语/西班牙语文献，请在启动时声明
-
-## 与 cnki-advanced-search 的配合使用
-
-外文检索与知网检索互为补充，建议双轨并行：
-
-| | cnki-advanced-search | foreign-literature-search |
-|---|---|---|
-| 覆盖 | CSSCI 中文期刊 | SSCI 英文期刊 |
-| 检索方式 | 浏览器自动化 | WebSearch + 布尔检索式 |
-| 适合 | C刊投稿文献综述 | SSCI投稿 / 理论对话 |
-| 互补点 | 中国本土研究 | 国际理论与方法进展 |
+| 现象 | 原因与处理 |
+|------|-----------|
+| 结果中有不相关文献 | 过滤组使用了太泛的单词（如 "meaning"）→ 改用复合短语如 "meaning of work" |
+| 结果 < 20 篇 | 主检索词太精确 → 加入上位概念（如加 "gig worker + platform worker"） |
+| SSL/连接错误 | 网络波动，脚本自动重试3次；若持续失败稍等后重试 |
+| 摘要为空 | OpenAlex 部分论文无摘要数据（属正常现象） |
+| 顶刊标注 ⭐ | 期刊名匹配 ASQ、Human Relations、Organization Studies 等内置顶刊列表 |
