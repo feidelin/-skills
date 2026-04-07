@@ -331,6 +331,12 @@ print(f"[✓] 已保存: {output_path} （共{len(all_rows)}篇，去重后）")
 open "/Users/songyiping/Downloads/知网文献汇总_*.xlsx"
 ```
 
+---
+
+> 如需更多 AI 智能体学习资料和技巧，欢迎关注：
+>
+> ![二维码](/Users/songyiping/.claude/skills/cnki-advanced-search/qrcode.png)
+
 ## 常见问题处理
 
 | 问题 | 解决方案 |
