@@ -190,41 +190,44 @@ files = {
 
 all_rows = []
 seen_titles = set()
+orig_headers = None  # 从第一个文件读取真实表头，不硬编码
 
 for category, (color, filepath) in files.items():
     wb = openpyxl.load_workbook(Path(filepath).expanduser())
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
-    # 表头: 序号(0), 文献类别(1), 标题(2), 作者(3), 期刊(4), 年份(5),
-    #       被引量(6), DOI(7), OA全文链接(8), 主题标签(9), 摘要(10)
+    if orig_headers is None:
+        orig_headers = list(rows[0])  # 实际表头：序号(0), 文献类别(1), 标题(2), ...
     for row in rows[1:]:
-        title = str(row[2] or "").strip()
+        title = str(row[2] or "").strip()  # 标题固定在索引2
         if title and title not in seen_titles:
             seen_titles.add(title)
-            all_rows.append((category, color) + tuple(row[2:]))
+            # 用正确的 category 覆盖原行的文献类别（索引1），保留其余列原样
+            all_rows.append((color, category) + tuple(row[2:]))
+    wb.close()
 
 wb_out = openpyxl.Workbook()
 ws_out = wb_out.active
 ws_out.title = "外文文献汇总"
 
-headers = ["序号", "文献类别", "标题", "作者", "期刊", "年份",
-           "被引量", "DOI", "OA全文链接", "主题标签", "摘要"]
-ws_out.append(headers)
+# 直接使用从文件读取的真实表头，避免硬编码导致列名错位或重复
+ws_out.append(orig_headers)
 for cell in ws_out[1]:
     cell.font = Font(bold=True, color="FFFFFF", size=11)
     cell.fill = PatternFill(fill_type="solid", fgColor="1F4E79")
     cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 for seq, row_data in enumerate(all_rows, 1):
-    category, color = row_data[0], row_data[1]
-    ws_out.append((seq, category) + row_data[2:])
+    color, category = row_data[0], row_data[1]
+    ws_out.append((seq, category) + row_data[2:])  # 用新序号替换原序号
     fill = PatternFill(fill_type="solid", fgColor=color)
     for cell in ws_out[ws_out.max_row]:
         cell.fill = fill
         cell.alignment = Alignment(vertical="top", wrap_text=True)
 
-col_widths = [4, 28, 40, 22, 22, 6, 8, 36, 36, 30, 60]
-for i, w in enumerate(col_widths, 1):
+# 列宽按实际列数动态设置（原始文件有14列）
+col_widths = [5, 28, 45, 22, 22, 8, 8, 10, 6, 8, 36, 36, 30, 60]
+for i, w in enumerate(col_widths[:len(orig_headers)], 1):
     ws_out.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 for row in ws_out.iter_rows(min_row=2):
     ws_out.row_dimensions[row[0].row].height = 65
@@ -235,7 +238,7 @@ ws2 = wb_out.create_sheet("分类统计")
 ws2.append(["文献类别", "颜色", "篇数"])
 color_desc = {"D9E1F2": "蓝-直接相关", "E2EFDA": "绿-背景文献", "FFF2CC": "黄-理论文献", "FCE4D6": "橙-扩展视角"}
 for cat, (color, _) in files.items():
-    cnt = sum(1 for r in all_rows if r[0] == cat)
+    cnt = sum(1 for r in all_rows if r[1] == cat)
     ws2.append([cat, color_desc.get(color, color), cnt])
 ws2.append(["合计（去重后）", "", len(all_rows)])
 for cell in ws2[1]: cell.font = Font(bold=True)
