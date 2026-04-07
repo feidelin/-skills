@@ -121,10 +121,23 @@ python3 /Users/songyiping/.claude/skills/foreign-literature-search/scripts/opena
 | `--max-results` | 最多返回篇数（默认100） |
 | `--year-from` / `--year-to` | 年份范围（如 `--year-from 2010`） |
 | `--no-soc-filter` | 关闭社会科学 concept 过滤（默认开启） |
+| `--min-quartile` | 最低期刊分区要求，如 `--min-quartile Q2` 只保留Q1/Q2期刊 |
+| `--no-journal-stats` | 跳过期刊分区查询（加快速度，不推荐） |
 | `--category` | 文献类别标签（用于最终 Excel 分类） |
 | `--color` | Excel 行颜色，蓝=`D9E1F2`，绿=`E2EFDA`，黄=`FFF2CC`，橙=`FCE4D6` |
 | `--output-file` | 指定输出路径 |
 | `--topic` | 检索主题（用于文件名） |
+
+**Excel 输出列说明**：
+
+| 列名 | 说明 |
+|------|------|
+| JCR分区 | Q1-Q4，基于精选内置期刊表（无*号）或2yr影响因子估算（有*号） |
+| 中科院分区 | 1区-4区，同上来源 |
+| 2yr影响因子 | OpenAlex source API 返回的近2年平均被引率（≈ 2yr IF） |
+| 被引量 | 论文总引用次数 |
+
+> **分区数据说明**：内置表覆盖约50个社科核心期刊（含ASQ、ASR、AJS、Human Relations等），未覆盖的期刊通过 OpenAlex 影响因子估算分区（带 `*` 标记）。JCR/中科院官方分区以最新年度为准，请自行核实。
 
 ---
 

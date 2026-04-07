@@ -4,6 +4,7 @@ OpenAlex 外文学术文献检索脚本
 - 支持多关键词组 AND 联合检索（各组内 OR，组间取交集）
 - 自动过滤社会科学领域
 - 按被引量排序，解码摘要，输出 Excel
+- 支持期刊分区信息（JCR Q1-Q4 / 中科院分区 + 2年影响因子）
 """
 
 import argparse
@@ -35,18 +36,98 @@ SOCIAL_SCIENCE_CONCEPTS = [
     "C41008148",   # Computer science (数字社会学需要)
 ]
 
-# 重要社会学期刊（用于优先级标注）
-TOP_SOCIOLOGY_JOURNALS = {
-    "american journal of sociology", "american sociological review",
-    "social forces", "theory and society", "annual review of sociology",
-    "british journal of sociology", "sociology", "current sociology",
-    "social problems", "qualitative sociology", "work employment and society",
-    "new media and society", "organization", "organization studies",
-    "organization science", "administrative science quarterly",
-    "journal of management studies", "human relations",
-    "information communication society", "social science research",
-    "journal of consumer research", "media culture society",
+# 精选社科期刊分区表（journal name小写 → (JCR分区, 中科院分区)）
+# JCR分区基于社会科学引文索引各学科分类；中科院分区按JIF百分位
+JOURNAL_RANKING_TABLE = {
+    # ── 社会学顶刊 ──────────────────────────────────────────────────────────
+    "american sociological review":                       ("Q1", "1区"),
+    "american journal of sociology":                      ("Q1", "1区"),
+    "annual review of sociology":                         ("Q1", "1区"),
+    "social forces":                                      ("Q1", "1区"),
+    "sociological theory":                                ("Q1", "2区"),
+    "sociological methods & research":                    ("Q1", "2区"),
+    "sociological methods and research":                  ("Q1", "2区"),
+    "theory and society":                                 ("Q1", "2区"),
+    "british journal of sociology":                       ("Q1", "2区"),
+    "sociology":                                          ("Q1", "2区"),
+    "current sociology":                                  ("Q2", "2区"),
+    "social problems":                                    ("Q2", "2区"),
+    "qualitative sociology":                              ("Q2", "3区"),
+    "gender & society":                                   ("Q1", "2区"),
+    "gender and society":                                 ("Q1", "2区"),
+    "social science research":                            ("Q2", "2区"),
+    "european sociological review":                       ("Q1", "2区"),
+    "acta sociologica":                                   ("Q2", "3区"),
+    "sociological review":                                ("Q2", "3区"),
+    "the sociological review":                            ("Q2", "3区"),
+    "cultural sociology":                                 ("Q2", "3区"),
+    "sociology of education":                             ("Q1", "2区"),
+    "qualitative inquiry":                                ("Q2", "3区"),
+
+    # ── 劳工/组织/管理 ───────────────────────────────────────────────────────
+    "administrative science quarterly":                   ("Q1", "1区"),
+    "organization science":                               ("Q1", "1区"),
+    "organization studies":                               ("Q1", "1区"),
+    "organization":                                       ("Q1", "2区"),
+    "journal of management studies":                      ("Q1", "1区"),
+    "journal of management":                              ("Q1", "1区"),
+    "human relations":                                    ("Q1", "2区"),
+    "work employment and society":                        ("Q1", "2区"),
+    "work, employment and society":                       ("Q1", "2区"),
+    "industrial and labor relations review":              ("Q1", "2区"),
+    "british journal of industrial relations":            ("Q1", "2区"),
+    "work and occupations":                               ("Q2", "3区"),
+    "labor studies journal":                              ("Q3", "4区"),
+    "journal of labor economics":                         ("Q1", "1区"),
+    "journal of labor research":                          ("Q3", "4区"),
+    "economic and industrial democracy":                  ("Q2", "3区"),
+    "transfer: european review of labour and research":   ("Q3", "4区"),
+
+    # ── 平台经济/数字劳动/零工经济 ──────────────────────────────────────────
+    "new media & society":                                ("Q1", "1区"),
+    "new media and society":                              ("Q1", "1区"),
+    "information communication & society":                ("Q1", "2区"),
+    "information, communication & society":               ("Q1", "2区"),
+    "journal of computer-mediated communication":         ("Q1", "1区"),
+    "social media + society":                             ("Q1", "2区"),
+    "media, culture & society":                           ("Q2", "3区"),
+    "media culture & society":                            ("Q2", "3区"),
+    "big data & society":                                 ("Q1", "2区"),
+    "information technology & people":                    ("Q2", "3区"),
+    "journal of information technology":                  ("Q1", "1区"),
+    "mis quarterly":                                      ("Q1", "1区"),
+    "global networks":                                    ("Q1", "2区"),
+    "economy and society":                                ("Q1", "2区"),
+    "socio-economic review":                              ("Q1", "2区"),
+    "journal of consumer research":                       ("Q1", "1区"),
+
+    # ── 城市/移动性/空间 ─────────────────────────────────────────────────────
+    "urban studies":                                      ("Q1", "1区"),
+    "environment and planning a":                         ("Q1", "1区"),
+    "environment and planning a: economy and space":      ("Q1", "1区"),
+    "city":                                               ("Q1", "2区"),
+    "international journal of urban and regional research":("Q1", "2区"),
+    "journal of urban affairs":                           ("Q2", "3区"),
+    "mobilities":                                         ("Q2", "2区"),
+    "transportation research part a: policy and practice":("Q1", "1区"),
+    "transport policy":                                   ("Q1", "2区"),
+    "travel behaviour and society":                       ("Q2", "3区"),
 }
+
+# ── 根据 2yr影响因子 估算分区（用于未收录期刊的兜底推断）────────────────────
+def infer_quartile_from_impact(impact_factor):
+    """2yr_mean_citedness 估算分区（社科领域经验阈值）"""
+    if impact_factor is None:
+        return ("", "")
+    if impact_factor >= 3.0:
+        return ("Q1*", "1-2区*")
+    elif impact_factor >= 1.5:
+        return ("Q2*", "2-3区*")
+    elif impact_factor >= 0.8:
+        return ("Q3*", "3-4区*")
+    else:
+        return ("Q4*", "4区*")
+# * 号表示"根据影响因子估算，非官方分区"
 
 
 def decode_abstract(inverted_index):
@@ -60,10 +141,8 @@ def decode_abstract(inverted_index):
     return " ".join(words[k] for k in sorted(words))
 
 
-def openalex_get(endpoint, params, email=None, retries=3):
+def openalex_get(endpoint, params, retries=3):
     """带重试的 OpenAlex API 请求（无需 API key）"""
-    if email:
-        params["mailto"] = email
     query_string = urllib.parse.urlencode(params)
     url = f"https://api.openalex.org/{endpoint}?{query_string}"
 
@@ -82,67 +161,94 @@ def openalex_get(endpoint, params, email=None, retries=3):
                 return None
 
 
-def fetch_group_ids(synonyms, social_science_filter, year_from, year_to, max_fetch=500):
+def fetch_source_stats(source_ids):
     """
-    检索单个关键词组（多个同义词列表），返回 ({paper_id: paper_data}, total_count)
-    策略：对每个同义词单独检索，合并结果（OR 逻辑），再按被引量排序
+    批量查询 OpenAlex sources API，获取 2yr影响因子和 h_index。
+    source_ids: list of OpenAlex source IDs（形如 "S12345678"，去掉 URL 前缀）
+    返回 {source_id: {"2yr_if": float, "h_index": int}}
     """
-    # 构造过滤条件
-    filter_parts = []
-    if social_science_filter:
-        # concepts.id 用 | 分隔表示 OR（任意一个社科 concept 即可）
-        soc_filter = "concepts.id:" + "|".join(SOCIAL_SCIENCE_CONCEPTS)
-        filter_parts.append(soc_filter)
-    if year_from:
-        filter_parts.append(f"from_publication_date:{year_from}-01-01")
-    if year_to:
-        filter_parts.append(f"to_publication_date:{year_to}-12-31")
-    filter_str = ",".join(filter_parts) if filter_parts else None
+    if not source_ids:
+        return {}
 
-    merged = {}
-    total = 0
-
-    for synonym in synonyms:
-        # 多词短语加引号，单词直接用
-        query = f'"{synonym}"' if " " in synonym else synonym
+    result = {}
+    # OpenAlex source filter: pipe-separated IDs, 每次最多50个
+    chunk_size = 50
+    for i in range(0, len(source_ids), chunk_size):
+        chunk = source_ids[i:i + chunk_size]
+        filter_str = "id:" + "|".join(chunk)
         params = {
-            "search": query,
-            "per-page": min(200, max_fetch),
-            "select": "id,title,authorships,publication_year,primary_location,"
-                      "cited_by_count,abstract_inverted_index,doi,open_access,topics",
-            "sort": "cited_by_count:desc",
+            "filter": filter_str,
+            "select": "id,display_name,summary_stats",
+            "per-page": chunk_size,
         }
-        if filter_str:
-            params["filter"] = filter_str
+        data = openalex_get("sources", params)
+        if data:
+            for src in data.get("results", []):
+                sid = src.get("id", "").replace("https://openalex.org/", "")
+                stats = src.get("summary_stats") or {}
+                result[sid] = {
+                    "2yr_if": stats.get("2yr_mean_citedness"),
+                    "h_index": stats.get("h_index"),
+                }
+        time.sleep(0.15)
 
-        cursor = "*"
-        fetched_this = 0
+    return result
 
-        while fetched_this < max_fetch:
-            params["cursor"] = cursor
-            data = openalex_get("works", params)
-            if not data:
-                break
 
-            items = data.get("results", [])
-            meta = data.get("meta", {})
-            total = max(total, meta.get("count", 0))
+def enrich_papers_with_journal_stats(papers):
+    """
+    为论文列表补充期刊分区信息：
+    1. 先用内置分区表匹配（精确）
+    2. 未匹配则查询 OpenAlex sources API 获取 2yr影响因子，估算分区
+    返回 {paper_id: {"jcr_q": str, "cas_tier": str, "2yr_if": float}}
+    """
+    # 收集需要查询的 source IDs
+    source_id_map = {}  # paper_id → source_id
+    need_api = []       # source IDs 未在内置表中找到
 
-            for item in items:
-                pid = item.get("id")
-                if pid and pid not in merged:
-                    merged[pid] = item
+    paper_journal_map = {}  # paper_id → journal_name（已小写）
 
-            fetched_this += len(items)
-            next_cursor = meta.get("next_cursor")
-            if not next_cursor or len(items) < 200 or fetched_this >= max_fetch:
-                break
-            cursor = next_cursor
-            time.sleep(0.12)
+    for paper in papers:
+        pid = paper.get("id", "")
+        primary_loc = paper.get("primary_location") or {}
+        source = primary_loc.get("source") or {}
+        journal_name = (source.get("display_name") or "").lower().strip()
+        source_id = source.get("id", "").replace("https://openalex.org/", "")
 
-        time.sleep(0.15)  # 同义词之间稍微间隔
+        paper_journal_map[pid] = (journal_name, source_id)
 
-    return merged, total
+        # 检查内置分区表
+        if journal_name not in JOURNAL_RANKING_TABLE and source_id:
+            if source_id not in need_api:
+                need_api.append(source_id)
+
+    # 批量查询未收录期刊的 OpenAlex source stats
+    print(f"  [分区] 内置表已覆盖 {len(papers) - len(set(sid for _, sid in paper_journal_map.values() if sid in [s for s in need_api]))}"
+          f" 篇，查询 {len(need_api)} 个未收录期刊的影响因子...")
+    api_stats = fetch_source_stats(need_api) if need_api else {}
+
+    # 构建结果
+    enriched = {}
+    for paper in papers:
+        pid = paper.get("id", "")
+        journal_name, source_id = paper_journal_map.get(pid, ("", ""))
+
+        if journal_name in JOURNAL_RANKING_TABLE:
+            jcr_q, cas_tier = JOURNAL_RANKING_TABLE[journal_name]
+            impact = api_stats.get(source_id, {}).get("2yr_if") if source_id else None
+        else:
+            # 用 API 数据估算
+            stats = api_stats.get(source_id, {}) if source_id else {}
+            impact = stats.get("2yr_if")
+            jcr_q, cas_tier = infer_quartile_from_impact(impact)
+
+        enriched[pid] = {
+            "jcr_q": jcr_q,
+            "cas_tier": cas_tier,
+            "2yr_if": round(impact, 2) if impact else "",
+        }
+
+    return enriched
 
 
 def search_openalex(keyword_groups, max_results=100,
@@ -251,7 +357,7 @@ def search_openalex(keyword_groups, max_results=100,
     return passed[:max_results], len(passed)
 
 
-def format_paper(paper, category=""):
+def format_paper(paper, category="", journal_stats=None):
     """将 OpenAlex paper 对象格式化为输出行"""
     title = paper.get("title") or ""
 
@@ -267,8 +373,17 @@ def format_paper(paper, category=""):
     source = primary_loc.get("source") or {}
     journal = source.get("display_name") or ""
 
-    # 顶刊标注
-    is_top = journal.lower() in TOP_SOCIOLOGY_JOURNALS
+    # 期刊分区信息
+    pid = paper.get("id", "")
+    stats = (journal_stats or {}).get(pid, {})
+    jcr_q = stats.get("jcr_q", "")
+    cas_tier = stats.get("cas_tier", "")
+    impact_2yr = stats.get("2yr_if", "")
+
+    # 顶刊标注（分区已知且为Q1则加星）
+    is_top = jcr_q.startswith("Q1") or journal.lower() in {
+        k for k, v in JOURNAL_RANKING_TABLE.items() if v[0] == "Q1"
+    }
     journal_display = f"⭐ {journal}" if is_top else journal
 
     # 年份、被引
@@ -295,6 +410,9 @@ def format_paper(paper, category=""):
         "标题": title,
         "作者": author_str,
         "期刊": journal_display,
+        "JCR分区": jcr_q,
+        "中科院分区": cas_tier,
+        "2yr影响因子": impact_2yr,
         "年份": year,
         "被引量": cited,
         "DOI": doi,
@@ -304,16 +422,36 @@ def format_paper(paper, category=""):
     }
 
 
+def filter_by_quartile(papers, min_quartile):
+    """
+    按最低分区筛选（Q1最严，Q4最宽）
+    min_quartile: "Q1" / "Q2" / "Q3" / "Q4"
+    带 * 号的估算值也参与筛选（保守处理：估算Q1*视为Q1可通过）
+    """
+    order = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4}
+    min_val = order.get(min_quartile.upper(), 4)
+
+    filtered = []
+    for p in papers:
+        q = p.get("JCR分区", "").rstrip("*")
+        val = order.get(q, 99)
+        if val <= min_val:
+            filtered.append(p)
+    return filtered
+
+
 def save_excel(all_batches, output_path, topic_label=""):
     """
     all_batches: list of (category_name, color_hex, papers)
+    papers 每项包含 JCR分区、中科院分区、2yr影响因子 字段
     """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "文献汇总"
 
-    headers = ["序号", "文献类别", "标题", "作者", "期刊", "年份",
-               "被引量", "DOI", "OA全文链接", "主题标签", "摘要"]
+    headers = ["序号", "文献类别", "标题", "作者", "期刊",
+               "JCR分区", "中科院分区", "2yr影响因子",
+               "年份", "被引量", "DOI", "OA全文链接", "主题标签", "摘要"]
     ws.append(headers)
 
     # 表头样式
@@ -339,6 +477,9 @@ def save_excel(all_batches, output_path, topic_label=""):
                 paper.get("标题", ""),
                 paper.get("作者", ""),
                 paper.get("期刊", ""),
+                paper.get("JCR分区", ""),
+                paper.get("中科院分区", ""),
+                paper.get("2yr影响因子", ""),
                 paper.get("年份", ""),
                 paper.get("被引量", 0),
                 paper.get("DOI", ""),
@@ -350,10 +491,18 @@ def save_excel(all_batches, output_path, topic_label=""):
             for cell in ws[ws.max_row]:
                 cell.fill = row_fill
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+            # JCR分区列特殊高亮
+            jcr_cell = ws.cell(row=ws.max_row, column=6)
+            q_val = str(paper.get("JCR分区", "")).rstrip("*")
+            q_colors = {"Q1": "C6EFCE", "Q2": "FFEB9C", "Q3": "FCE4D6", "Q4": "F4CCCC"}
+            if q_val in q_colors:
+                jcr_cell.fill = PatternFill(fill_type="solid", fgColor=q_colors[q_val])
+
             seq += 1
 
     # 列宽
-    col_widths = [4, 28, 40, 22, 22, 6, 8, 36, 36, 30, 60]
+    col_widths = [4, 24, 38, 20, 22, 7, 8, 8, 6, 7, 32, 32, 28, 55]
     for i, width in enumerate(col_widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
 
@@ -377,24 +526,31 @@ def save_excel(all_batches, output_path, topic_label=""):
     ws2.column_dimensions["A"].width = 40
     ws2.column_dimensions["B"].width = 20
 
-    # WoS 检索式 sheet（方便有机构账号的用户）
+    # WoS 检索式 sheet
     ws3 = wb.create_sheet("WoS检索式参考")
     ws3.append(["说明", "本检索式可在 Web of Science 高级检索中使用，限定 SSCI 数据库"])
     ws3.append([])
     ws3.append(["本次检索主题", topic_label])
+    ws3.append([])
+    ws3.append(["分区说明", "JCR分区/中科院分区：有*号的为根据2yr影响因子估算，非官方数据"])
+    ws3.append(["数据来源", "内置分区表 + OpenAlex source API (2yr_mean_citedness)"])
 
     wb.save(output_path)
     return seq - 1
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OpenAlex 学术文献检索工具")
+    parser = argparse.ArgumentParser(description="OpenAlex 学术文献检索工具（含期刊分区）")
     parser.add_argument("--keywords", action="append", required=True,
                         help="关键词组（每个 --keywords 为一组，组内用 + 分隔同义词，组间取 AND 交集）")
     parser.add_argument("--max-results", type=int, default=100, help="最多返回篇数（默认100）")
     parser.add_argument("--year-from", type=int, help="发表年份下限（如 2015）")
     parser.add_argument("--year-to", type=int, help="发表年份上限（如 2025）")
     parser.add_argument("--no-soc-filter", action="store_true", help="关闭社会科学概念过滤")
+    parser.add_argument("--min-quartile", default="", choices=["Q1", "Q2", "Q3", "Q4", ""],
+                        help="最低期刊分区要求（如 --min-quartile Q2 则只保留Q1/Q2期刊）")
+    parser.add_argument("--no-journal-stats", action="store_true",
+                        help="跳过期刊分区查询（加快速度）")
     parser.add_argument("--category", default="直接相关", help="文献类别标签（用于分类汇总）")
     parser.add_argument("--color", default="D9E1F2", help="Excel 行颜色（十六进制，默认蓝色）")
     parser.add_argument("--output-dir", default="~/Downloads", help="输出目录")
@@ -408,7 +564,6 @@ def main():
     keyword_groups = []
     for kw_str in args.keywords:
         synonyms = [k.strip() for k in kw_str.split("+") if k.strip()]
-        # 转成 "syn1 OR syn2 OR syn3" 格式供 search_openalex 解析
         query = " OR ".join(synonyms)
         keyword_groups.append(query)
 
@@ -425,8 +580,29 @@ def main():
 
     print(f"\n[✓] 检索完成，获取 {len(papers)} 篇")
 
+    # 期刊分区信息
+    journal_stats = {}
+    if not args.no_journal_stats and papers:
+        print("\n[...] 查询期刊分区信息...")
+        journal_stats = enrich_papers_with_journal_stats(papers)
+
     # 格式化
-    formatted = [format_paper(p, args.category) for p in papers]
+    formatted = [format_paper(p, args.category, journal_stats) for p in papers]
+
+    # 按分区筛选（可选）
+    if args.min_quartile:
+        before = len(formatted)
+        formatted = filter_by_quartile(formatted, args.min_quartile)
+        print(f"  [分区筛选] {args.min_quartile} 及以上: {before} → {len(formatted)} 篇")
+
+    # 分区分布统计
+    if journal_stats:
+        q_counter = Counter()
+        for p in formatted:
+            q = p.get("JCR分区", "未知").rstrip("*") or "未知"
+            q_counter[q] += 1
+        dist = "  ".join(f"{q}:{n}" for q, n in sorted(q_counter.items()))
+        print(f"  期刊分区分布: {dist}")
 
     # 输出路径
     if args.output_file:
@@ -441,8 +617,8 @@ def main():
     batches = [(args.category, args.color, formatted)]
     total_saved = save_excel(batches, output_path, topic_label=args.topic)
 
-    print(f"[✓] 已保存: {output_path}（共 {total_saved} 篇）")
-    print(f"OUTPUT_FILE:{output_path}")  # 供 shell 脚本解析路径
+    print(f"\n[✓] 已保存: {output_path}（共 {total_saved} 篇）")
+    print(f"OUTPUT_FILE:{output_path}")
 
 
 if __name__ == "__main__":
