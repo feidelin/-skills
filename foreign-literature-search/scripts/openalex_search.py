@@ -141,7 +141,7 @@ def decode_abstract(inverted_index):
     return " ".join(words[k] for k in sorted(words))
 
 
-def openalex_get(endpoint, params, retries=3):
+def openalex_get(endpoint, params, retries=5):
     """带重试的 OpenAlex API 请求（无需 API key）"""
     query_string = urllib.parse.urlencode(params)
     url = f"https://api.openalex.org/{endpoint}?{query_string}"
@@ -153,9 +153,10 @@ def openalex_get(endpoint, params, retries=3):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode())
         except Exception as e:
+            wait = 2.0 * (attempt + 1)
             if attempt < retries - 1:
-                print(f"  [!] 请求失败（{e}），{1.5*(attempt+1):.1f}s 后重试...")
-                time.sleep(1.5 * (attempt + 1))
+                print(f"  [!] 请求失败（{e}），{wait:.1f}s 后重试...")
+                time.sleep(wait)
             else:
                 print(f"  [✗] 请求最终失败: {url[:80]}")
                 return None
@@ -163,34 +164,24 @@ def openalex_get(endpoint, params, retries=3):
 
 def fetch_source_stats(source_ids):
     """
-    批量查询 OpenAlex sources API，获取 2yr影响因子和 h_index。
+    查询 OpenAlex sources API，获取 2yr影响因子和 h_index。
     source_ids: list of OpenAlex source IDs（形如 "S12345678"，去掉 URL 前缀）
     返回 {source_id: {"2yr_if": float, "h_index": int}}
+    逐个查询（每个 source 一次 GET /sources/{id}），避免批量 filter 400 问题。
     """
     if not source_ids:
         return {}
 
     result = {}
-    # OpenAlex source filter: pipe-separated IDs, 每次最多50个
-    chunk_size = 50
-    for i in range(0, len(source_ids), chunk_size):
-        chunk = source_ids[i:i + chunk_size]
-        filter_str = "id:" + "|".join(chunk)
-        params = {
-            "filter": filter_str,
-            "select": "id,display_name,summary_stats",
-            "per-page": chunk_size,
-        }
-        data = openalex_get("sources", params)
-        if data:
-            for src in data.get("results", []):
-                sid = src.get("id", "").replace("https://openalex.org/", "")
-                stats = src.get("summary_stats") or {}
-                result[sid] = {
-                    "2yr_if": stats.get("2yr_mean_citedness"),
-                    "h_index": stats.get("h_index"),
-                }
-        time.sleep(0.15)
+    for sid in source_ids:
+        data = openalex_get(f"sources/{sid}", {"select": "id,display_name,summary_stats"})
+        if data and data.get("id"):
+            stats = data.get("summary_stats") or {}
+            result[sid] = {
+                "2yr_if": stats.get("2yr_mean_citedness"),
+                "h_index": stats.get("h_index"),
+            }
+        time.sleep(0.12)
 
     return result
 
